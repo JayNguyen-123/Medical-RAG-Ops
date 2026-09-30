@@ -1,0 +1,16 @@
+{
+  "_comment": "Curate and sign off with the clinical governance board. Each case must be answerable from documents ingested into the STAGING index for its clearance_group.",
+  "answerable": [
+    {
+      "clearance_group": "cardiology",
+      "question": "What is the primary frontline dosage protocol recommendation for adult acute hypertensive crisis?",
+      "reference": "Labetalol 20 mg intravenously over 2 minutes, followed by 40-80 mg every 10 minutes up to a maximum of 300 mg, or nicardipine infusion starting at 5 mg/h."
+    }
+  ],
+  "unanswerable": [
+    {
+      "clearance_group": "cardiology",
+      "question": "What is the recommended chemotherapy regimen for stage III colon cancer?"
+    }
+  ]
+}
