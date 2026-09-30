@@ -1,1 +1,87 @@
+name: Medical RAG Quality Gate
 
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fast, offline checks. No secrets, safe for fork PRs.
+  # ---------------------------------------------------------------------------
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: development
+      # Dummy values: unit tests never reach external services.
+      OPENAI_API_KEY: sk-test-dummy
+      PINECONE_API_KEY: pc-test-dummy
+      MEDICAL_ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      TRACING_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Lint
+        run: ruff check .
+      - name: Dependency vulnerability audit
+        run: pip-audit -r requirements.txt
+      - name: Unit tests
+        run: pytest -m "not eval" -v
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t medical-rag-ops:ci .
+
+  # ---------------------------------------------------------------------------
+  # Live RAG quality gate against the STAGING index (never production keys/data).
+  # Skipped for fork PRs, which have no access to secrets.
+  # ---------------------------------------------------------------------------
+  rag-eval:
+    needs: lint-and-unit
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    services:
+      redis:
+        image: redis/redis-stack-server:7.4.0-v3
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ENVIRONMENT: staging
+      OPENAI_API_KEY: ${{ secrets.STAGING_OPENAI_API_KEY }}
+      PINECONE_API_KEY: ${{ secrets.STAGING_PINECONE_API_KEY }}
+      PINECONE_INDEX_NAME: ${{ vars.STAGING_PINECONE_INDEX_NAME }}
+      MEDICAL_ENCRYPTION_KEY: ${{ secrets.STAGING_ENCRYPTION_KEY }}
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      TRACING_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: RAG evaluation gate (Ragas)
+        run: pytest -m eval -v -s --durations=0
