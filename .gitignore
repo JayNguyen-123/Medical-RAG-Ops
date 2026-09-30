@@ -1,0 +1,21 @@
+# --- Secrets: NEVER commit ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python / tooling ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+celerybeat-schedule*
+
+# --- Data (may contain licensed or sensitive material) ---
+data/
+pgdata/
+redisdata/

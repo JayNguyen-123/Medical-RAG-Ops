@@ -1,0 +1,133 @@
+# Production-oriented stack. For local development, add a docker-compose.override.yml
+# that bind-mounts source code and publishes extra ports -- do not do that here.
+
+x-app: &app
+  build: .
+  image: medical-rag-ops:local
+  env_file: .env
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  networks: [backend]
+
+services:
+  # ------------------------------------------------------------------ data tier
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:?DB_USER is required}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [backend]            # not published to the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    # Redis Stack ships the query engine (FT.* commands) required by the HNSW semantic cache.
+    image: redis/redis-stack-server:7.4.0-v3
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      REDIS_ARGS: "--requirepass ${REDIS_PASSWORD} --appendonly yes --maxmemory-policy noeviction"
+    volumes:
+      - redisdata:/data
+    networks: [backend]            # not published to the host
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------ observability
+  phoenix:
+    image: arizephoenix/phoenix:${PHOENIX_VERSION:?pin PHOENIX_VERSION to a release tag}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PHOENIX_PORT: "6006"
+      PHOENIX_HOST: 0.0.0.0
+      PHOENIX_SQL_DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      PHOENIX_ENABLE_AUTH: "true"
+      PHOENIX_SECRET: ${PHOENIX_SECRET:?PHOENIX_SECRET is required}
+      PHOENIX_DEFAULT_ADMIN_INITIAL_PASSWORD: ${PHOENIX_ADMIN_INITIAL_PASSWORD:?PHOENIX_ADMIN_INITIAL_PASSWORD is required}
+    ports:
+      - "127.0.0.1:6006:6006"      # loopback only; expose via TLS reverse proxy / VPN
+    networks: [backend]
+    healthcheck:
+      # Phoenix image is distroless (no curl) -- use its Python interpreter.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:6006/healthz', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ------------------------------------------------------------------ application
+  celery_worker:
+    <<: *app
+    command: ["celery", "-A", "tasks", "worker", "--loglevel=INFO", "--concurrency=2"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      phoenix:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A tasks inspect ping -d celery@$$HOSTNAME --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+
+  celery_beat:
+    <<: *app
+    # Exactly ONE beat instance per deployment or tasks are scheduled multiple times.
+    command: ["celery", "-A", "tasks", "beat", "--loglevel=INFO", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    <<: *app
+    command: ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0",
+              "--server.headless=true", "--browser.gatherUsageStats=false"]
+    environment:
+      HOME: /tmp                   # streamlit writes a config dir under $HOME
+    ports:
+      - "127.0.0.1:8501:8501"      # ONLY reachable via the authenticating reverse proxy
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # One-off job:  docker compose run --rm rag_ingest --file /data/clinical_guidelines.pdf --group cardiology
+  rag_ingest:
+    <<: *app
+    restart: "no"
+    profiles: ["tools"]
+    entrypoint: ["python", "ingest.py"]
+    command: ["--help"]
+    volumes:
+      - ./data:/data:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  backend: {}
+
+volumes:
+  pgdata: {}
+  redisdata: {}

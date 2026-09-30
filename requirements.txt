@@ -1,0 +1,32 @@
+# Runtime dependencies. Ranges are bounded to the next major version; for deployments,
+# generate a fully pinned, hashed lock file and install with --require-hashes:
+#   pip-compile --generate-hashes -o requirements.lock requirements.txt
+
+# --- LLM orchestration & vector store ---
+langchain-core>=0.3.0,<0.4
+langchain-openai>=0.2.0,<0.4
+langchain-pinecone>=0.2.0,<0.3
+langchain-text-splitters>=0.3.0,<0.4
+pinecone>=5.4,<8            # NOTE: "pinecone-client" is the deprecated package name; never install both
+pypdf>=5.0,<7
+numpy>=1.26,<3
+
+# --- Observability & evaluation ---
+arize-phoenix-otel>=0.6,<1
+arize-phoenix-client>=1.0,<2
+arize-phoenix-evals>=0.20,<2  # tasks.py uses the llm_classify API
+openinference-instrumentation-langchain>=0.1.30,<1
+pandas>=2.2,<3
+
+# --- Async execution & cache ---
+celery[redis]>=5.4,<6
+redis>=5.0,<7
+requests>=2.32,<3
+
+# --- Security & config ---
+cryptography>=43.0
+pydantic>=2.9,<3
+pydantic-settings>=2.5,<3
+
+# --- UI ---
+streamlit>=1.40,<2
